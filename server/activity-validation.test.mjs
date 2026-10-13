@@ -1,0 +1,4 @@
+import {test} from 'node:test';import assert from 'node:assert/strict';import {validateActivity} from './activity-validation.mjs';
+const activity={title:'Troca de rolamento',employees:['e1'],date:'2026-10-12',status:'Concluída',machine:''};
+test('serviço simplificado é válido sem horas e sem máquina',()=>assert.doesNotThrow(()=>validateActivity(activity)));
+test('validação informa qual campo precisa ser corrigido',()=>{assert.throws(()=>validateActivity({...activity,title:''}),/serviço realizado/);assert.throws(()=>validateActivity({...activity,employees:[]}),/funcionário/);assert.throws(()=>validateActivity({...activity,date:'12/10/2026'}),/data válida/);assert.throws(()=>validateActivity({...activity,date:'2026-02-30'}),/data válida/);assert.throws(()=>validateActivity({...activity,status:'Inválido'}),/status válido/)});

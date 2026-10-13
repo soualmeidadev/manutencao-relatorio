@@ -1,0 +1,23 @@
+import {validateActivity} from './activity-validation.mjs';
+import express from 'express';import {DatabaseSync} from 'node:sqlite';import {mkdirSync} from 'node:fs';import {resolve} from 'node:path';
+mkdirSync('data',{recursive:true});const db=new DatabaseSync(process.env.DATABASE_PATH||'data/manutencao.sqlite');db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
+CREATE TABLE IF NOT EXISTS usuarios(id TEXT PRIMARY KEY,email TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS funcionarios(id TEXT PRIMARY KEY,data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS maquinas(id TEXT PRIMARY KEY,data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS atividades(id TEXT PRIMARY KEY,maquina_id TEXT REFERENCES maquinas(id),data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS participantes_atividade(atividade_id TEXT REFERENCES atividades(id),funcionario_id TEXT REFERENCES funcionarios(id),PRIMARY KEY(atividade_id,funcionario_id));
+CREATE TABLE IF NOT EXISTS configuracoes_empresa(id INTEGER PRIMARY KEY CHECK(id=1),data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS sessoes(token TEXT PRIMARY KEY,user_id TEXT REFERENCES usuarios(id),expires INTEGER NOT NULL);`);
+// Compatibilidade com bancos existentes: equipamentos deixam de ser obrigatórios.
+if(db.prepare('PRAGMA table_info(atividades)').all().find(c=>c.name==='maquina_id')?.notnull){
+ db.exec(`PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE;
+ CREATE TABLE atividades_nova(id TEXT PRIMARY KEY,maquina_id TEXT REFERENCES maquinas(id),data TEXT NOT NULL);
+ INSERT INTO atividades_nova SELECT id,maquina_id,data FROM atividades;
+ DROP TABLE atividades;
+ ALTER TABLE atividades_nova RENAME TO atividades;
+ COMMIT; PRAGMA foreign_keys=ON;`);
+}
+db.prepare('INSERT OR IGNORE INTO configuracoes_empresa VALUES(1,?)').run(JSON.stringify({company:'Minha empresa',manager:'Encarregada',sector:'Manutenção',logo:'',reportNotes:''}));
+const app=express();app.disable('x-powered-by');app.use(express.json({limit:'3mb'}));app.use('/api',(req,res,next)=>{if(req.method==='POST'&&req.headers.origin&&new URL(req.headers.origin).host!==req.headers.host)return res.status(403).json({error:'Origem inválida'});next()});
+app.get('/api/data',(_req,res)=>{const read=t=>db.prepare(`SELECT data FROM ${t}`).all().map(r=>JSON.parse(r.data));res.json({employees:read('funcionarios'),machines:read('maquinas'),activities:read('atividades').map(a=>({...a,employees:db.prepare('SELECT funcionario_id FROM participantes_atividade WHERE atividade_id=?').all(a.id).map(p=>p.funcionario_id)})),settings:read('configuracoes_empresa')[0]})});
+app.post('/api/data',(req,res)=>{const d=req.body;if(!Array.isArray(d.employees)||!Array.isArray(d.machines)||!Array.isArray(d.activities)||!d.settings)return res.status(400).json({error:'Dados inválidos'});try{db.exec('BEGIN IMMEDIATE');for(const [table,rows]of[['funcionarios',d.employees],['maquinas',d.machines]])for(const row of rows){if(!row.id||!row.name)throw Error('Preencha os dados obrigatórios.');db.prepare(`INSERT INTO ${table} VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data`).run(row.id,JSON.stringify(row))}for(const a of d.activities){validateActivity(a);const previous=db.prepare('SELECT data FROM atividades WHERE id=?').get(a.id);const old=previous?JSON.parse(previous.data):null;const {history:ignored,updated_at:ignoredTime,...body}=a;if(old){const {history:oldHistory,updated_at:oldTime,...oldBody}=old;if(JSON.stringify(body)!==JSON.stringify(oldBody)){a.history=[...(old.history||[]),{at:new Date().toISOString(),original:{...old,history:undefined}}];a.updated_at=new Date().toISOString()}else{a.history=old.history;a.updated_at=old.updated_at}}else{a.history=[];a.updated_at=new Date().toISOString()}db.prepare('INSERT INTO atividades VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET maquina_id=excluded.maquina_id,data=excluded.data').run(a.id,db.prepare('SELECT id FROM maquinas WHERE id=?').get(a.machine||'')?.id??null,JSON.stringify(a));db.prepare('DELETE FROM participantes_atividade WHERE atividade_id=?').run(a.id);for(const id of new Set(a.employees))db.prepare('INSERT INTO participantes_atividade VALUES(?,?)').run(a.id,id)}db.prepare('INSERT INTO configuracoes_empresa VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(JSON.stringify(d.settings));db.exec('COMMIT');res.json({ok:true})}catch(e){db.exec('ROLLBACK');res.status(400).json({error:e.message})}});app.use(express.static(resolve('dist')));app.use((err,_req,res,_next)=>res.status(500).json({error:'Erro interno ao processar a solicitação.'}));app.listen(Number(process.env.PORT)||3001,'127.0.0.1',()=>console.log('Gestão da Manutenção: http://localhost:3001'));

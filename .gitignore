@@ -1,0 +1,15 @@
+node_modules/
+dist/
+data/
+.env
+*.tsbuildinfo
+
+.env.*
+!.env.example
+.agents/
+.codex/
+.aws/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+relatorio-Elson-minimalista.pdf
